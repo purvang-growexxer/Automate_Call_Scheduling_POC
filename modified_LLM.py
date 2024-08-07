@@ -1,6 +1,6 @@
 import os.path
 from datetime import datetime, timedelta
-import re
+import pytz
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -45,7 +45,6 @@ def extract_meeting_info(user_input):
     recurrence: <recurrence>
     attendees: <attendees>
     conference_data: <conference_data>
-    
     If the user does not provide any end_time then set the meeting for 1 hour.
     """
  
@@ -65,11 +64,81 @@ def extract_meeting_info(user_input):
  
     return llm_data
  
+def validate_meeting_details(details):
+    # Set default values if keys are missing
+    details.setdefault('summary', 'Meeting Summary')
+    details.setdefault('location', 'Any Location')
+    details.setdefault('description', 'Meeting Description')
+    details.setdefault('start_date', get_current_date().strftime('%Y-%m-%d'))
+    details.setdefault('end_date', details['start_date'])
+    details.setdefault('time_zone', 'Asia/Kolkata')
+    details.setdefault('recurrence', 'RRULE:FREQ=DAILY;COUNT=1')
+    details.setdefault('conference_data', 'yes')
+ 
+    # Parse start and end times
+    if 'start_time' not in details or not details['start_time']:
+        details['start_time'] = '09:00'  # Default start time
+    if 'end_time' not in details or not details['end_time']:
+        # Default to 1 hour meeting if end time is not provided
+        start_dt = datetime.strptime(details['start_time'], '%H:%M')
+        end_dt = start_dt + timedelta(hours=1)
+        details['end_time'] = end_dt.strftime('%H:%M')
+ 
+    # Ensure start_date and end_date are in correct format
+    try:
+        datetime.strptime(details['start_date'], '%Y-%m-%d')
+        datetime.strptime(details['end_date'], '%Y-%m-%d')
+    except ValueError:
+        raise ValueError("Invalid date format. Please use YYYY-MM-DD.")
+ 
+    # Validate attendees
+    if 'attendees' in details:
+        details['attendees'] = [email.strip() for email in details['attendees'].split(",")]
+ 
+    return details
+ 
+def create_google_meet_event(service, meeting_details):
+    start_datetime = f"{meeting_details['start_date']}T{meeting_details['start_time']}:00"
+    end_datetime = f"{meeting_details['end_date']}T{meeting_details['end_time']}:00"
+ 
+    attendees = [{"email": email} for email in meeting_details['attendees']]
+ 
+    event = {
+        "summary": meeting_details["summary"],
+        "location": meeting_details["location"],
+        "description": meeting_details["description"],
+        "colorId": 6,
+        "start": {
+            "dateTime": start_datetime,
+            "timeZone": meeting_details["time_zone"]
+        },
+        "end": {
+            "dateTime": end_datetime,
+            "timeZone": meeting_details["time_zone"]
+        },
+        "recurrence": [
+            meeting_details["recurrence"]
+        ],
+        "attendees": attendees,
+        "conferenceData": {
+            "createRequest": {
+                "requestId": "sample123",
+                "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                }
+            }
+        } if meeting_details["conference_data"].lower() == 'yes' else {}
+    }
+ 
+    event = service.events().insert(calendarId="primary", body=event, conferenceDataVersion=1).execute()
+ 
+    return event
+ 
 def main():
     creds = None
  
     if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json")
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
  
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -86,56 +155,16 @@ def main():
  
         user_input = input("Enter your meeting request: ")
         meeting_details = extract_meeting_info(user_input)
+        meeting_details = validate_meeting_details(meeting_details)
  
-        # Set default values if keys are missing
-        meeting_details.setdefault('summary', 'Meeting Summary')
-        meeting_details.setdefault('location', 'Any Location')
-        meeting_details.setdefault('description', 'Meeting Description')
-        meeting_details.setdefault('start_date', get_current_date().strftime('%Y-%m-%d'))
-        meeting_details.setdefault('end_date', meeting_details['start_date'])
-        meeting_details.setdefault('time_zone', 'Asia/Kolkata')
-        meeting_details.setdefault('recurrence', 'RRULE:FREQ=DAILY;COUNT=1')
-        meeting_details.setdefault('conference_data', 'yes')
- 
-        # Parse dates and times
-        start_datetime = f"{meeting_details['start_date']}T{meeting_details['start_time']}:00"
-        end_datetime = f"{meeting_details['end_date']}T{meeting_details['end_time']}:00"
- 
-        # Parse attendees
-        attendees = [{"email": email.strip()} for email in meeting_details['attendees'].split(",")]
- 
-        event = {
-            "summary": meeting_details["summary"],
-            "location": meeting_details["location"],
-            "description": meeting_details["description"],
-            "colorId": 6,
-            "start": {
-                "dateTime": start_datetime,
-                "timeZone": meeting_details["time_zone"]
-            },
-            "end": {
-                "dateTime": end_datetime,
-                "timeZone": meeting_details["time_zone"]
-            },
-            "recurrence": [
-                meeting_details["recurrence"]
-            ],
-            "attendees": attendees,
-            "conferenceData": {
-                "createRequest": {
-                    "requestId": "sample123",
-                    "conferenceSolutionKey": {
-                        "type": "hangoutsMeet"
-                    }
-                }
-            }
-        }
- 
-        event = service.events().insert(calendarId="primary", body=event, conferenceDataVersion=1).execute()
+        event = create_google_meet_event(service, meeting_details)
  
         print(f"Event created: {event.get('htmlLink')}")
     except HttpError as error:
         print(f"An error occurred: {error}")
+    except ValueError as ve:
+        print(f"Validation error: {ve}")
  
 if __name__ == "__main__":
     main()
+    

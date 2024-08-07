@@ -7,6 +7,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from langchain_groq import ChatGroq
+import configparser
  
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
  
@@ -48,8 +49,11 @@ def extract_meeting_info(user_input):
     
     If the user does not provide any end_time then set the meeting for 1 hour.
     """
- 
-    llm = ChatGroq(model="llama-3.1-70b-versatile", temperature=0, groq_api_key='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')
+    config = configparser.ConfigParser()
+    config.read('API.ini')
+
+    API_key = config['api']['api_key']
+    llm = ChatGroq(model="llama-3.1-70b-versatile", temperature=0.2, groq_api_key=API_key)
     llm_response = llm.invoke(llm_prompt)
  
     llm_output = llm_response.content.strip()
